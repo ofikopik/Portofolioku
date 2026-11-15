@@ -131,8 +131,6 @@ img { max-width: 100%; display: block; }
     letter-spacing: -0.03em;
 }
 
-.logo span { color: var(--accent); }
-
 .nav-links {
     display: flex;
     gap: 6px;

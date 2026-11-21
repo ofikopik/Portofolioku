@@ -19,30 +19,296 @@
         document.querySelector('meta[name="theme-color"]').setAttribute("content", next === "dark" ? "#0b1409" : "#f5f9ee");
     });
 
-    /* ---------- 2. Mobile menu ---------- */
-    var menuBtn = document.getElementById("menuBtn");
-    var navLinks = document.getElementById("navLinks");
+    /* ---------- 2. Quick menu (search panel, like the tab search in Chrome) ---------- */
+    var qmTrigger = document.getElementById("qmTrigger");
+    var qm = document.getElementById("quickMenu");
+    var qmBackdrop = document.getElementById("qmBackdrop");
+    var qmInput = document.getElementById("qmInput");
+    var qmBody = document.getElementById("qmBody");
+    var qmKbd = document.getElementById("qmKbd");
+    var phoneQuery = window.matchMedia("(max-width: 760px)");
+    var canHover = window.matchMedia("(hover: hover)").matches;
 
-    function setMenu(open) {
-        navLinks.classList.toggle("open", open);
-        menuBtn.setAttribute("aria-expanded", String(open));
-        menuBtn.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+    var qmOpen = false;
+    var qmTimer;
+    var recentOpen = true;            // is the "Recently Visited" group expanded?
+    var currentSection = "home";
+    var itemsById = {};
+
+    function svg(paths) {
+        return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + "</svg>";
     }
 
-    menuBtn.addEventListener("click", function () {
-        setMenu(!navLinks.classList.contains("open"));
+    var SECTION_ICONS = {
+        home: svg('<path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/>'),
+        about: svg('<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>'),
+        skills: svg('<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>'),
+        projects: svg('<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>'),
+        contact: svg('<rect x="3" y="5" width="18" height="14" rx="3"/><path d="m3 8 9 6 9-6"/>')
+    };
+
+    var KIND_LABEL = { section: "Section", project: "Project", skill: "Skill", link: "Link" };
+    var CHEVRON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>';
+
+    if (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) qmKbd.textContent = "⌘K";
+
+    /* -- recently visited (remembered on this device) -- */
+    var visits = [];
+    try {
+        var saved = JSON.parse(localStorage.getItem("visits") || "[]");
+        if (Array.isArray(saved)) visits = saved.filter(function (v) { return v && typeof v.id === "string" && typeof v.ts === "number"; });
+    } catch (e) { /* storage not available: keep it in memory only */ }
+
+    function addVisit(id) {
+        visits = visits.filter(function (v) { return v.id !== id; });
+        visits.unshift({ id: id, ts: Date.now() });
+        visits = visits.slice(0, 12);
+        try { localStorage.setItem("visits", JSON.stringify(visits)); } catch (e) { /* ignore */ }
+    }
+
+    function timeAgo(ts) {
+        var sec = Math.max(1, Math.round((Date.now() - ts) / 1000));
+        if (sec < 60) return sec + (sec === 1 ? " sec ago" : " secs ago");
+        var min = Math.round(sec / 60);
+        if (min < 60) return min + (min === 1 ? " min ago" : " mins ago");
+        var hr = Math.round(min / 60);
+        if (hr < 24) return hr + (hr === 1 ? " hour ago" : " hours ago");
+        var day = Math.round(hr / 24);
+        return day + (day === 1 ? " day ago" : " days ago");
+    }
+
+    function esc(text) {
+        return String(text).replace(/[&<>"]/g, function (c) {
+            return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+        });
+    }
+
+    /* -- the list is built from the page itself, so new projects show up automatically -- */
+    function categoryLabel(value) {
+        return (value || "").split(" ").map(function (c) {
+            var btn = document.querySelector('.filter[data-filter="' + c + '"]');
+            return btn ? btn.textContent.trim() : c;
+        }).join(" / ");
+    }
+
+    function buildItems() {
+        var items = [];
+
+        document.querySelectorAll(".nav-links .nav-link").forEach(function (a) {
+            var id = a.getAttribute("href").slice(1);
+            var target = document.getElementById(id);
+            if (!target) return;
+            items.push({ id: "section:" + id, kind: "section", section: id, title: a.textContent.trim(),
+                         icon: SECTION_ICONS[id] || "", target: target, keywords: id });
+        });
+
+        document.querySelectorAll(".project-card").forEach(function (card) {
+            var title = card.querySelector("h3").textContent.trim();
+            var glyph = card.querySelector(".thumb-label");
+            var body = card.querySelector(".project-body");
+            items.push({ id: "project:" + title, kind: "project", title: title, glyph: true,
+                         icon: glyph ? glyph.textContent : "▢", target: card,
+                         sub: "Project • " + categoryLabel(card.getAttribute("data-category")),
+                         keywords: (body ? body.textContent : "") + " " + (card.getAttribute("data-category") || "") });
+        });
+
+        document.querySelectorAll(".skill-card").forEach(function (card) {
+            var title = card.querySelector("h3").textContent.trim();
+            var level = card.querySelector(".level");
+            var found = level ? level.getAttribute("aria-label").match(/Level (\d)/) : null;
+            items.push({ id: "skill:" + title, kind: "skill", title: title, glyph: true,
+                         icon: card.querySelector(".skill-icon").textContent, target: card,
+                         sub: "Skill" + (found ? " • Level " + found[1] + "/5" : ""),
+                         keywords: card.textContent });
+        });
+
+        document.querySelectorAll(".contact-card").forEach(function (a) {
+            var name = a.querySelector("small").textContent.trim();
+            var handle = a.querySelector("strong").textContent.trim();
+            items.push({ id: "link:" + name, kind: "link", title: name, icon: a.querySelector(".contact-ico").innerHTML,
+                         href: a.href, sub: "Link • " + handle, keywords: handle });
+        });
+
+        itemsById = {};
+        items.forEach(function (it) { itemsById[it.id] = it; });
+        return items;
+    }
+
+    function isCurrent(it) { return it.kind === "section" && it.section === currentSection; }
+
+    function subFor(it) {
+        if (it.kind === "section") return "Section • " + (isCurrent(it) ? "viewing now" : "#" + it.section);
+        return it.sub;
+    }
+
+    function itemHTML(it, sub) {
+        var link = !!it.href;
+        var tag = link ? "a" : "button";
+        var attrs = link ? ' href="' + esc(it.href) + '" target="_blank" rel="noopener"' : ' type="button"';
+        return "<" + tag + ' class="qm-item' + (isCurrent(it) ? " current" : "") + '" data-id="' + esc(it.id) + '"' + attrs + ">" +
+            '<span class="qm-ico" aria-hidden="true">' + (it.glyph ? esc(it.icon) : it.icon) + "</span>" +
+            '<span class="qm-text"><span class="qm-title">' + esc(it.title) + '</span><span class="qm-sub">' + esc(sub) + "</span></span>" +
+            "</" + tag + ">";
+    }
+
+    function renderMenu() {
+        var items = buildItems();
+        var query = qmInput.value.trim().toLowerCase();
+        var html = "";
+
+        if (query) {
+            var words = query.split(/\s+/);
+            var results = items.filter(function (it) {
+                var hay = (it.title + " " + KIND_LABEL[it.kind] + " " + (it.sub || "") + " " + it.keywords).toLowerCase();
+                return words.every(function (w) { return hay.indexOf(w) > -1; });
+            });
+            html += '<div class="qm-group-head"><span>Results</span><span class="qm-count">' + results.length + "</span></div>";
+            if (!results.length) {
+                html += '<p class="qm-empty">No results for “' + esc(qmInput.value.trim()) + '”. Try “animation” or “css”.</p>';
+            }
+            results.forEach(function (it) { html += itemHTML(it, subFor(it)); });
+        } else {
+            html += '<div class="qm-group-head"><span>Sections</span></div>';
+            items.filter(function (it) { return it.kind === "section"; })
+                 .forEach(function (it) { html += itemHTML(it, subFor(it)); });
+
+            html += '<button class="qm-group-head qm-toggle" type="button" aria-expanded="' + recentOpen + '"><span>Recently Visited</span>' + CHEVRON + "</button>";
+            if (recentOpen) {
+                var shown = 0;
+                visits.forEach(function (v) {
+                    var it = itemsById[v.id];
+                    if (!it || isCurrent(it) || shown >= 8) return;
+                    shown++;
+                    html += itemHTML(it, KIND_LABEL[it.kind] + " • " + timeAgo(v.ts));
+                });
+                if (!shown) html += '<p class="qm-empty">Nothing here yet. Move around the page and your last stops will show up here.</p>';
+            }
+        }
+        qmBody.innerHTML = html;
+    }
+
+    function openMenu() {
+        if (qmOpen) return;
+        qmOpen = true;
+        clearTimeout(qmTimer);
+        qmInput.value = "";
+        renderMenu();
+        qm.hidden = false;
+        qmBackdrop.hidden = false;
+        requestAnimationFrame(function () {
+            qm.classList.add("open");
+            qmBackdrop.classList.add("open");
+        });
+        qmTrigger.setAttribute("aria-expanded", "true");
+        if (phoneQuery.matches) root.classList.add("lock");
+        // On a phone, do not pop the keyboard up right away
+        if (canHover) qmInput.focus({ preventScroll: true }); else qm.focus({ preventScroll: true });
+    }
+
+    function closeMenu(returnFocus) {
+        if (!qmOpen) return;
+        qmOpen = false;
+        qm.classList.remove("open");
+        qmBackdrop.classList.remove("open");
+        qmTrigger.setAttribute("aria-expanded", "false");
+        root.classList.remove("lock");
+        qmTimer = setTimeout(function () {
+            qm.hidden = true;
+            qmBackdrop.hidden = true;
+        }, reduceMotion ? 0 : 200);
+        if (returnFocus) qmTrigger.focus({ preventScroll: true });   // do not let the page jump
+    }
+
+    function goTo(item) {
+        addVisit(item.id);
+        closeMenu(false);
+
+        // A project hidden by the filter buttons: show everything first
+        if (item.kind === "project" && item.target.hidden) {
+            var all = document.querySelector('.filter[data-filter="all"]');
+            if (all) all.click();
+        }
+
+        setTimeout(function () {
+            item.target.scrollIntoView({
+                behavior: reduceMotion ? "auto" : "smooth",
+                block: item.kind === "section" ? "start" : "center",
+                inline: "center"
+            });
+            if (item.kind !== "section") {
+                item.target.classList.remove("flash");
+                void item.target.offsetWidth;          // restart the animation
+                item.target.classList.add("flash");
+                setTimeout(function () { item.target.classList.remove("flash"); }, 1500);
+            }
+        }, 80);
+    }
+
+    qmTrigger.addEventListener("click", function () {
+        if (qmOpen) closeMenu(true); else openMenu();
     });
 
-    navLinks.addEventListener("click", function (e) {
-        if (e.target.closest("a")) setMenu(false);
+    qmBackdrop.addEventListener("click", function () { closeMenu(true); });
+
+    qmInput.addEventListener("input", renderMenu);
+
+    qmBody.addEventListener("click", function (e) {
+        var toggle = e.target.closest(".qm-toggle");
+        if (toggle) {
+            recentOpen = !recentOpen;
+            renderMenu();
+            var again = qmBody.querySelector(".qm-toggle");
+            if (again) again.focus();
+            return;
+        }
+
+        var el = e.target.closest(".qm-item");
+        if (!el) return;
+        var item = itemsById[el.getAttribute("data-id")];
+        if (!item) return;
+
+        if (item.href) {                    // external link: it opens in a new tab by itself
+            addVisit(item.id);
+            closeMenu(false);
+            return;
+        }
+        e.preventDefault();
+        goTo(item);
+    });
+
+    qm.addEventListener("keydown", function (e) {
+        if (e.key === "Tab") {                           // keep the focus inside the panel
+            var focusable = [].slice.call(qm.querySelectorAll("input, button, a[href]"));
+            var first = focusable[0];
+            var last = focusable[focusable.length - 1];
+            if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+            else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            var list = [].slice.call(qm.querySelectorAll(".qm-item, .qm-toggle"));
+            if (!list.length) return;
+            e.preventDefault();
+            var i = list.indexOf(document.activeElement);
+            if (e.key === "ArrowDown") list[Math.min(list.length - 1, i + 1)].focus();
+            else if (i <= 0) qmInput.focus();
+            else list[i - 1].focus();
+        }
+    });
+
+    qmInput.addEventListener("keydown", function (e) {
+        if (e.key !== "Enter") return;
+        var first = qmBody.querySelector(".qm-item");
+        if (first) { e.preventDefault(); first.click(); }
     });
 
     document.addEventListener("keydown", function (e) {
-        if (e.key === "Escape") setMenu(false);
-    });
-
-    document.addEventListener("click", function (e) {
-        if (navLinks.classList.contains("open") && !e.target.closest(".navbar")) setMenu(false);
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+            e.preventDefault();
+            if (qmOpen) closeMenu(true); else openMenu();
+        } else if (e.key === "Escape" && qmOpen) {
+            closeMenu(true);
+        }
     });
 
     /* ---------- 3. Typing effect ---------- */
@@ -99,9 +365,13 @@
 
     /* ---------- 5. Highlight the menu link of the section you are viewing ---------- */
     var sections = document.querySelectorAll("main section[id]");
-    var links = document.querySelectorAll(".nav-link");
+    var links = document.querySelectorAll(".nav-link, .bn-link");
 
     function setActive(id) {
+        if (id !== currentSection) {
+            addVisit("section:" + currentSection);       // the section you just left
+            currentSection = id;
+        }
         links.forEach(function (link) {
             link.classList.toggle("active", link.getAttribute("href") === "#" + id);
         });
@@ -163,6 +433,14 @@
     photo.addEventListener("error", showFallback);
     if (photo.complete && photo.naturalWidth === 0) showFallback();
 
+    var heroAvatar = document.querySelector(".hero-avatar");
+    if (heroAvatar) {
+        var avatarImg = heroAvatar.querySelector("img");
+        var avatarMissing = function () { heroAvatar.classList.add("no-photo"); };
+        avatarImg.addEventListener("error", avatarMissing);
+        if (avatarImg.complete && avatarImg.naturalWidth === 0) avatarMissing();
+    }
+
     /* ---------- 8. Copy Instagram handle + toast ---------- */
     var copyBtn = document.getElementById("copyBtn");
     var toast = document.getElementById("toast");
@@ -200,6 +478,33 @@
     /* ---------- 9. Projects: filter buttons ---------- */
     var filterBtns = document.querySelectorAll(".filter");
     var projectCards = document.querySelectorAll(".project-card");
+    var projectsGrid = document.getElementById("projectsGrid");
+    var dotsBox = document.getElementById("projectDots");
+
+    // Small dots under the cards (phone version): one dot per visible card
+    function visibleCards() {
+        return [].filter.call(projectsGrid.children, function (c) { return !c.hidden; });
+    }
+
+    function updateDots() {
+        var cards = visibleCards();
+        var gridLeft = projectsGrid.getBoundingClientRect().left;
+        var best = 0;
+        var bestGap = Infinity;
+        cards.forEach(function (card, i) {
+            var gap = Math.abs(card.getBoundingClientRect().left - gridLeft - 20);
+            if (gap < bestGap) { bestGap = gap; best = i; }
+        });
+        [].forEach.call(dotsBox.children, function (dot, i) { dot.classList.toggle("on", i === best); });
+    }
+
+    function buildDots() {
+        dotsBox.innerHTML = visibleCards().map(function () { return "<i></i>"; }).join("");
+        updateDots();
+    }
+
+    projectsGrid.addEventListener("scroll", updateDots, { passive: true });
+    window.addEventListener("resize", updateDots);
 
     filterBtns.forEach(function (btn) {
         btn.addEventListener("click", function () {
@@ -217,8 +522,13 @@
                 card.hidden = !show;
                 if (show) card.classList.add("visible");
             });
+
+            projectsGrid.scrollLeft = 0;
+            buildDots();
         });
     });
+
+    buildDots();
 
     /* ---------- 10. Project pictures: fallback + viewer (lightbox) ---------- */
     var thumbs = document.querySelectorAll(".project-thumb");
